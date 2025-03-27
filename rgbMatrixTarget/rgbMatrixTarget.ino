@@ -13,7 +13,8 @@
  * 
  */
 
-#include <milesTag.h>
+//#include <milesTag.h>
+#include <lasertag.h>
 #include <EEPROM.h> //Used to store preferences
 
 #define MAJOR_VERSION 0
@@ -117,6 +118,10 @@ int scrollXposition = 0;
 #define SCROLL_DELAY_MEDIUM 50
 #define SCROLL_DELAY_SLOW 70
 uint8_t scrollDelay = SCROLL_DELAY_MEDIUM;
+
+#if defined(lasertag_h)
+  lasertag receiver;
+#endif
 
 void setup(){
   #if defined DEBUG_FSM || defined DEBUG_LED_MATRIX
@@ -264,9 +269,24 @@ void setup(){
   ledMatrix->begin();
   ledMatrix->setBrightness(MAX_LED_MATRIX_BRIGHTNESS);
   //Set up Laser-tag receiver
-  milesTag.debug(Serial);                 //Send milesTag debug output to Serial (optional)
-  milesTag.begin(milesTag.receiver);      //Simple single receiver requires basic initialisation
-  milesTag.setReceivePin(IR_RECEIVER_PIN);//Set the receive pin, which is mandatory
+  #if defined(lasertag_h)
+    #ifdef DEBUG_FSM
+      Serial.print(F("Infrared receiver connected on pin "));
+      Serial.println(IR_RECEIVER_PIN);
+    #endif
+      pinMode(IR_RECEIVER_PIN, INPUT);
+      attachInterrupt(digitalPinToInterrupt(IR_RECEIVER_PIN), DoTisrWrapper, CHANGE);
+    #ifdef DEBUG_DOT
+      Serial.print(F("Interrupt attached to pin "));
+      Serial.println(IR_RECEIVER_PIN);
+    #endif
+    //Need to do some internal setup in the lasertag library
+    receiver.resume();
+  #elif defined(milesTag_h)
+    milesTag.debug(Serial);                 //Send milesTag debug output to Serial (optional)
+    milesTag.begin(milesTag.receiver);      //Simple single receiver requires basic initialisation
+    milesTag.setReceivePin(IR_RECEIVER_PIN);//Set the receive pin, which is mandatory
+  #endif
   //Show the warning message
   scrollText("Lasertag target v" + String(MAJOR_VERSION) + "." + String(MINOR_VERSION) + "." + String(PATCH_VERSION));
 }
@@ -290,6 +310,19 @@ void loop(){
     //
     // Always be ready to take a hit
     //
+    #if defined(lasertag_h)
+    if(receiver.received())             //There is something in the packet buffer of the first 'busy' receiver. Multiple receivers can be busy and are handled individually.
+    {
+      if(receiver.hitsReceived() > 0)     //This is a damage packet
+      {
+        changeMatrixState(MATRIX_STATE_HIT);
+      }
+      else
+      {
+        receiver.resume();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+      }
+    }
+    #elif defined(milesTag_h)
     if(milesTag.dataReceived())             //There is something in the packet buffer of the first 'busy' receiver. Multiple receivers can be busy and are handled individually.
     {
       if(milesTag.receivedDamage() > 0)     //This is a damage packet
@@ -301,6 +334,7 @@ void loop(){
         milesTag.resumeReception();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
       }
     }
+    #endif
     //
     // Flash the LED to show the target
     //
@@ -329,7 +363,11 @@ void loop(){
     loopCounter = millis();
     #ifdef DEBUG_FSM
       Serial.print(F("Incoming hit: "));
+      #if defined(lasertag_h)
+      Serial.println(receiver.data_description());
+      #elif defined(milesTag_h)
       Serial.println(milesTag.messageDescription());
+      #endif
     #endif
     /*
     if(receiver.validWoW() || receiver.validLaserWar()) //LaserWar tends to have high hit numbers so also show one flash for it
@@ -369,7 +407,11 @@ void loop(){
       }
       else
       {
+        #if defined(lasertag_h)
+        receiver.resume();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+        #elif defined(milesTag_h)
         milesTag.resumeReception();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+        #endif
         changeMatrixState(MATRIX_STATE_WAITING);
         loopCounter = millis();
       }
@@ -432,6 +474,21 @@ void loop(){
        * Be ready to take a hit and interrupt scrolling
        * 
        */
+      #if defined(lasertag_h)
+      if(receiver.received())             //There is something in the packet buffer of the first 'busy' receiver. Multiple receivers can be busy and are handled individually.
+      {
+        if(receiver.hitsReceived() > 0)     //This is a damage packet
+        {
+          changeMatrixState(MATRIX_STATE_HIT);
+          loopCounter = millis();
+          return;
+        }
+        else
+        {
+          receiver.resume();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+        }
+      }
+      #elif defined(milesTag_h)
       if(milesTag.dataReceived())             //There is something in the packet buffer of the first 'busy' receiver. Multiple receivers can be busy and are handled individually.
       {
         if(milesTag.receivedDamage() > 0)     //This is a damage packet
@@ -445,6 +502,7 @@ void loop(){
           milesTag.resumeReception();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
         }
       }
+      #endif
       /*
        * 
        * Accept button inputs
@@ -470,18 +528,30 @@ void loop(){
     ledMatrix->show();
     if(LED_MATRIX_SHOW_DETAIL == true)
     {
+      #if defined(lasertag_h)
+      textToScroll = receiver.data_description();
+      #elif defined(milesTag_h)
       textToScroll = milesTag.messageDescription();
+      #endif
       #ifdef DEBUG_FSM
         Serial.print(F("Matrix text: "));
         Serial.println(textToScroll);
       #endif
       scrollText(textToScroll);
+      #if defined(lasertag_h)
+      receiver.resume();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+      #elif defined(milesTag_h)
       milesTag.resumeReception();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+      #endif
     }
     else
     {
       //attach the interrupt again so we can take more hits
+      #if defined(lasertag_h)
+      receiver.resume();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+      #elif defined(milesTag_h)
       milesTag.resumeReception();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+      #endif
       changeMatrixState(MATRIX_STATE_WAITING);
       loopCounter = millis();
     }
@@ -491,6 +561,21 @@ void loop(){
     //
     // Be ready to take a hit and interrupt scrolling
     //
+    #if defined(lasertag_h)
+    if(receiver.received())             //There is something in the packet buffer of the first 'busy' receiver. Multiple receivers can be busy and are handled individually.
+    {
+      if(receiver.hitsReceived() > 0)     //This is a damage packet
+      {
+        changeMatrixState(MATRIX_STATE_HIT);
+        loopCounter = millis();
+        return;
+      }
+      else
+      {
+        receiver.resume();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
+      }
+    }
+    #elif defined(milesTag_h)
     if(milesTag.dataReceived())             //There is something in the packet buffer of the first 'busy' receiver. Multiple receivers can be busy and are handled individually.
     {
       if(milesTag.receivedDamage() > 0)     //This is a damage packet
@@ -504,6 +589,7 @@ void loop(){
         milesTag.resumeReception();           //Clear the first 'busy' receiver buffer and prepare it for another packet. It is not automatically cleared
       }
     }
+    #endif
     if(millis() - loopCounter > cooldownTime)
     {
       loopCounter = millis();
@@ -615,6 +701,9 @@ void setMatrixColour()
   else if(receiver.validLaserWar())
   */
   {
+    #if defined(lasertag_h)
+      ledMatrix->fillScreen(colours[0]);
+    #elif defined(milesTag_h)
     if(milesTag.receivedTeamId() == 0)  //Red team
     {
       ledMatrix->fillScreen(colours[0]);
@@ -631,6 +720,7 @@ void setMatrixColour()
     {
       ledMatrix->fillScreen(colours[1]);
     }
+    #endif
   }
   /*
   else
@@ -930,3 +1020,12 @@ void changeMenuState(uint8_t newState){
     lastMenuStateChange = millis();
   }
 }
+
+#if defined(lasertag_h)
+//This does nothing but wrap the ISR in the library into a static function. There is no way to fix this, leave it alone!
+
+void DoTisrWrapper()
+{
+  receiver.isr();
+}
+#endif
