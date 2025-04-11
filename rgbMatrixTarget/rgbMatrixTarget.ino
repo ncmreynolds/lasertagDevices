@@ -24,24 +24,36 @@
 #if defined(ESP32)
   #if CONFIG_IDF_TARGET_ESP32C3
     #define IR_RECEIVER_PIN 1
+  #else
+    #define IR_RECEIVER_PIN 18
   #endif
 #else
   #define IR_RECEIVER_PIN 2 //This is the pin your IR sensor is connected to. It must be capable of attachine a hardware interrupt. On AVR Arduino this is often pins 2 & 3
 #endif
 
-#define LED_MATRIX_DISPLAY    //Uncomment these two lines if you have an 8x8 Neopixel array to show info
-#define MATRIX_PIN 3
+//#define LED_MATRIX_DISPLAY_8X8      //Uncomment these two lines if you have an 8x8 Neopixel array to show info
+#define LED_MATRIX_DISPLAY_32X24    //Uncomment these two lines if you have an 32x24 Neopixel array to show info
+
+#if defined(LED_MATRIX_DISPLAY_8X8)
+  #define MATRIX_PIN 3
+#elif defined(LED_MATRIX_DISPLAY_32X24)
+  #define MATRIX_PIN 16
+#endif
 
 #define BUTTON_CONNECTED    //Uncomment these two lines if you have a button connected
-#define buttonPin 6        //Pin used for button
-//#define buttonPin A0        //Pin used for button
-uint32_t buttonPushTime = 0;
+#if defined(BUTTON_CONNECTED)
+  #if defined(LED_MATRIX_DISPLAY_8X8)
+    #define buttonPin 6        //Pin used for button
+  #elif defined(LED_MATRIX_DISPLAY_32X24)
+    #define buttonPin 19
+  #endif
+  uint32_t buttonPushTime = 0;
+  #define BUTTON_STATE_IDLE 0
+  #define BUTTON_STATE_SHORTPRESS 1
+  #define BUTTON_STATE_LONGPRESS 2
+  uint8_t buttonState = BUTTON_STATE_IDLE;
+#endif
 
-#define BUTTON_STATE_IDLE 0
-#define BUTTON_STATE_SHORTPRESS 1
-#define BUTTON_STATE_LONGPRESS 2
-
-uint8_t buttonState = BUTTON_STATE_IDLE;
 
 /*
  * All the stuff below here is optional to set, but tweak away if you feel like it
@@ -54,15 +66,29 @@ uint8_t buttonState = BUTTON_STATE_IDLE;
 //#define DEBUG_INDICATOR_LED   // Uncomment this lint to get matrix debug
 
 #include <Adafruit_GFX.h>
-#include <Adafruit_NeoMatrix.h>
-#include <Adafruit_NeoPixel.h>
-#ifndef PSTR
- #define PSTR // Make Arduino Due happy
+#if defined(LED_MATRIX_DISPLAY_8X8)
+  #include <Adafruit_NeoMatrix.h>
+  #include <Adafruit_NeoPixel.h>
+  Adafruit_NeoMatrix *ledMatrix;
+  const uint8_t textSize = 1;
+#elif defined(LED_MATRIX_DISPLAY_32X24)
+  #include <FastLED.h>
+  #include <FastLED_NeoMatrix.h>
+  #define mw 32
+  #define mh 24
+  #define NUMMATRIX (mw*mh)
+  CRGB matrixleds[NUMMATRIX];
+  FastLED_NeoMatrix *ledMatrix = new FastLED_NeoMatrix(matrixleds, 8, 8, mw/8, mh/8, 
+      NEO_MATRIX_TOP     + NEO_MATRIX_LEFT +
+      NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG + 
+      NEO_TILE_BOTTOM + NEO_TILE_LEFT +  NEO_TILE_PROGRESSIVE);
+  const uint8_t textSize = 3;
 #endif
+uint16_t colours[7];
 
-#define MATRIX_PIN 3
-#define MATRIX_TYPE_EEPROM_LOCATION 2
-
+#if defined(LED_MATRIX_DISPLAY_8X8)
+  #define MATRIX_TYPE_EEPROM_LOCATION 2
+#endif
 #define MAX_LED_MATRIX_BRIGHTNESS_EEPROM_LOCATION 4
 #define LED_MATRIX_SHOW_DETAIL_EEPROM_LOCATION 6
 #define BLINK_PERIOD_EEPROM_LOCATION 8
@@ -76,8 +102,6 @@ uint8_t LED_MATRIX_DECAY_FREQUENCY = MAX_LED_MATRIX_BRIGHTNESS/16;
 uint8_t currentLedMatrixBrightness = MAX_LED_MATRIX_BRIGHTNESS;
 bool LED_MATRIX_SHOW_DETAIL = true;
 String textToScroll;
-Adafruit_NeoMatrix *ledMatrix;
-uint16_t colours[7];
 
 #define MATRIX_STATE_IDLE 0
 #define MATRIX_STATE_HIT 1
@@ -110,8 +134,8 @@ uint32_t offTime = 1000 - onTime ;
 //Matrix scrolling values
 int16_t scrollingTextX = 0;
 int16_t scrollingTextY = 0;
-int16_t scrollingTextWidth = 0;
-int16_t scrollingTextHeight = 0;
+uint16_t scrollingTextWidth = 0;
+uint16_t scrollingTextHeight = 0;
 int scrollXposition = 0;
 
 #define SCROLL_DELAY_FAST 30
@@ -124,6 +148,9 @@ uint8_t scrollDelay = SCROLL_DELAY_MEDIUM;
 #endif
 
 void setup(){
+  #if defined(ESP32)
+    EEPROM.begin(32);
+  #endif
   #if defined DEBUG_FSM || defined DEBUG_LED_MATRIX
     Serial.begin(115200);
   	delay(100);
@@ -147,45 +174,64 @@ void setup(){
       Serial.println(buttonPin);
     #endif
   #endif
-  Serial.print(F("LED Matrix variant: "));
-  #ifdef BUTTON_CONNECTED
-    if(digitalRead(buttonPin) == false)
-    {
-      if(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION) == 0)
+  #if defined(LED_MATRIX_DISPLAY_8X8)
+    Serial.print(F("LED Matrix variant: "));
+    #ifdef BUTTON_CONNECTED
+      if(digitalRead(buttonPin) == false)
       {
-        EEPROM.update(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(1));
+        if(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION) == 0)
+        {
+          #if defined(ESP32)
+            EEPROM.write(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(1));
+            EEPROM.commit();
+          #else
+            EEPROM.update(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(1));
+          #endif
+        }
+        else if(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION) == 1)
+        {
+          #if defined(ESP32)
+            EEPROM.write(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(0));
+            EEPROM.commit();
+          #else
+            EEPROM.update(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(0));
+          #endif
+        }
+        else
+        {
+          #if defined(ESP32)
+            EEPROM.write(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(0));
+            EEPROM.commit();
+          #else
+            EEPROM.update(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(0));
+          #endif
+        }
+        #ifdef DEBUG_FSM
+          Serial.print(F("Changed LED Matrix variant: "));
+          Serial.println(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION));
+        #endif
       }
-      else if(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION) == 1)
-      {
-        EEPROM.update(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(0));
-      }
-      else
-      {
-        EEPROM.update(MATRIX_TYPE_EEPROM_LOCATION, uint8_t(0));
-      }
-      #ifdef DEBUG_FSM
-        Serial.print(F("Changed LED Matrix variant: "));
-        Serial.println(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION));
-      #endif
-    }
+    #endif
   #endif
   //Set matrix type from EEPROM
-  if(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION) == 0)
-  {
-    Serial.println('1');
-    ledMatrix = new Adafruit_NeoMatrix(8, 8, MATRIX_PIN,
-      NEO_MATRIX_TOP     + NEO_MATRIX_RIGHT +
-      NEO_MATRIX_COLUMNS + NEO_MATRIX_PROGRESSIVE,
-      NEO_GRB            + NEO_KHZ800);
-  }
-  else
-  {
-    Serial.println('2');
-    ledMatrix =  new Adafruit_NeoMatrix(8, 8, MATRIX_PIN,
-      NEO_MATRIX_TOP     + NEO_MATRIX_RIGHT +
-      NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG,
-      NEO_GRB            + NEO_KHZ800);
-  }
+  #if defined(LED_MATRIX_DISPLAY_8X8)
+    if(EEPROM.read(MATRIX_TYPE_EEPROM_LOCATION) == 0)
+    {
+      Serial.println('1');
+      ledMatrix = new Adafruit_NeoMatrix(8, 8, MATRIX_PIN,
+        NEO_MATRIX_TOP     + NEO_MATRIX_RIGHT +
+        NEO_MATRIX_COLUMNS + NEO_MATRIX_PROGRESSIVE,
+        NEO_GRB            + NEO_KHZ800);
+    }
+    else
+    {
+      Serial.println('2');
+      ledMatrix =  new Adafruit_NeoMatrix(8, 8, MATRIX_PIN,
+        NEO_MATRIX_TOP     + NEO_MATRIX_RIGHT +
+        NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG,
+        NEO_GRB            + NEO_KHZ800);
+    }
+  #endif
   colours[0] = ledMatrix->Color(255, 0, 0); //Red
   colours[1] = ledMatrix->Color(0, 255, 0); //Green
   colours[2] = ledMatrix->Color(255, 255, 0); //Yellow
@@ -195,7 +241,7 @@ void setup(){
   colours[6] = ledMatrix->Color(255, 255, 255); //White
   MAX_LED_MATRIX_BRIGHTNESS = EEPROM.read(MAX_LED_MATRIX_BRIGHTNESS_EEPROM_LOCATION);
   HEARTBEAT_LED_MATRIX_BRIGHTNESS = MAX_LED_MATRIX_BRIGHTNESS/10;
-  //LED_MATRIX_DECAY_RATE = MAX_LED_MATRIX_BRIGHTNESS / 64;
+  LED_MATRIX_DECAY_RATE = MAX_LED_MATRIX_BRIGHTNESS / 32;
   LED_MATRIX_DECAY_FREQUENCY = 1024/MAX_LED_MATRIX_BRIGHTNESS;
   //Set mode from EEPROM
   if(EEPROM.read(LED_MATRIX_SHOW_DETAIL_EEPROM_LOCATION) == 0)
@@ -266,6 +312,9 @@ void setup(){
       Serial.println(onTime + offTime);
     }
   #endif
+  #if defined(LED_MATRIX_DISPLAY_32X24)
+    FastLED.addLeds<NEOPIXEL,MATRIX_PIN>(matrixleds, NUMMATRIX);
+  #endif
   ledMatrix->begin();
   ledMatrix->setBrightness(MAX_LED_MATRIX_BRIGHTNESS);
   //Set up Laser-tag receiver
@@ -287,7 +336,7 @@ void setup(){
     milesTag.begin(milesTag.receiver);      //Simple single receiver requires basic initialisation
     milesTag.setReceivePin(IR_RECEIVER_PIN);//Set the receive pin, which is mandatory
   #endif
-  //Show the warning message
+  //Show the welcome message
   scrollText("Lasertag target v" + String(MAJOR_VERSION) + "." + String(MINOR_VERSION) + "." + String(PATCH_VERSION));
 }
 
@@ -431,7 +480,8 @@ void loop(){
         ledMatrix->setBrightness(currentLedMatrixBrightness);
         ledMatrix->show();
         //Reduce the brightess
-        currentLedMatrixBrightness--;
+        //currentLedMatrixBrightness--;
+        currentLedMatrixBrightness-=LED_MATRIX_DECAY_RATE;
       }
       else if(currentLedMatrixBrightness > MIN_LED_MATRIX_BRIGHTNESS && millis()%LED_MATRIX_DECAY_FREQUENCY == 0)
       {
@@ -603,7 +653,7 @@ void scrollText(String text)
   textToScroll = text;
   scrollXposition = ledMatrix->width();
   ledMatrix->setTextWrap(false);
-  ledMatrix->setTextSize(1);
+  ledMatrix->setTextSize(textSize);
   //ledMatrix->setBrightness(MAX_LED_MATRIX_BRIGHTNESS);
   ledMatrix->setBrightness(HEARTBEAT_LED_MATRIX_BRIGHTNESS);
   ledMatrix->setTextColor(colours[6]);  //Set text to white
@@ -704,22 +754,22 @@ void setMatrixColour()
     #if defined(lasertag_h)
       ledMatrix->fillScreen(colours[0]);
     #elif defined(milesTag_h)
-    if(milesTag.receivedTeamId() == 0)  //Red team
-    {
-      ledMatrix->fillScreen(colours[0]);
-    }
-    else if(milesTag.receivedTeamId() == 1) //Blue team
-    {
-      ledMatrix->fillScreen(colours[3]);
-    }
-    else if(milesTag.receivedTeamId() == 2) //Yellow team
-    {
-      ledMatrix->fillScreen(colours[2]);
-    }
-    else if(milesTag.receivedTeamId() == 3) //Green team
-    {
-      ledMatrix->fillScreen(colours[1]);
-    }
+      if(milesTag.receivedTeamId() == 0)  //Red team
+      {
+        ledMatrix->fillScreen(colours[0]);
+      }
+      else if(milesTag.receivedTeamId() == 1) //Blue team
+      {
+        ledMatrix->fillScreen(colours[3]);
+      }
+      else if(milesTag.receivedTeamId() == 2) //Yellow team
+      {
+        ledMatrix->fillScreen(colours[2]);
+      }
+      else if(milesTag.receivedTeamId() == 3) //Green team
+      {
+        ledMatrix->fillScreen(colours[1]);
+      }
     #endif
   }
   /*
@@ -734,7 +784,12 @@ void setMatrixColour()
 void changeMode()
 {
   LED_MATRIX_SHOW_DETAIL = not LED_MATRIX_SHOW_DETAIL;
-  EEPROM.update(LED_MATRIX_SHOW_DETAIL_EEPROM_LOCATION, uint8_t(LED_MATRIX_SHOW_DETAIL));
+  #if defined(ESP32)
+    EEPROM.write(LED_MATRIX_SHOW_DETAIL_EEPROM_LOCATION, uint8_t(LED_MATRIX_SHOW_DETAIL));
+    EEPROM.commit();
+  #else
+    EEPROM.update(LED_MATRIX_SHOW_DETAIL_EEPROM_LOCATION, uint8_t(LED_MATRIX_SHOW_DETAIL));
+  #endif
   #ifdef DEBUG_FSM
     Serial.print(F("Mode: "));
     if(LED_MATRIX_SHOW_DETAIL)
@@ -786,9 +841,14 @@ void changeBrightness()
     Serial.println(MAX_LED_MATRIX_BRIGHTNESS);
   #endif
   HEARTBEAT_LED_MATRIX_BRIGHTNESS = MAX_LED_MATRIX_BRIGHTNESS/10;
-  //LED_MATRIX_DECAY_RATE = MAX_LED_MATRIX_BRIGHTNESS / 64;
+  LED_MATRIX_DECAY_RATE = MAX_LED_MATRIX_BRIGHTNESS / 32;
   LED_MATRIX_DECAY_FREQUENCY = 1024/MAX_LED_MATRIX_BRIGHTNESS;
-  EEPROM.update(MAX_LED_MATRIX_BRIGHTNESS_EEPROM_LOCATION, MAX_LED_MATRIX_BRIGHTNESS);
+  #if defined(ESP32)
+    EEPROM.write(MAX_LED_MATRIX_BRIGHTNESS_EEPROM_LOCATION, MAX_LED_MATRIX_BRIGHTNESS);
+    EEPROM.commit();
+  #else
+    EEPROM.update(MAX_LED_MATRIX_BRIGHTNESS_EEPROM_LOCATION, MAX_LED_MATRIX_BRIGHTNESS);
+  #endif
   ledMatrix->setBrightness(MAX_LED_MATRIX_BRIGHTNESS);
   lastMenuStateChange = millis();
   showCurrentBrightness();
@@ -805,17 +865,32 @@ void changeScrollSpeed()
   if(scrollDelay == SCROLL_DELAY_FAST)
   {
     scrollDelay = SCROLL_DELAY_MEDIUM;
-    EEPROM.update(SCROLL_SPEED_EEPROM_LOCATION, 1);
+    #if defined(ESP32)
+      EEPROM.write(SCROLL_SPEED_EEPROM_LOCATION, 1);
+      EEPROM.commit();
+    #else
+      EEPROM.update(SCROLL_SPEED_EEPROM_LOCATION, 1);
+    #endif
   }
   else if(scrollDelay == SCROLL_DELAY_MEDIUM)
   {
     scrollDelay = SCROLL_DELAY_SLOW;
-    EEPROM.update(SCROLL_SPEED_EEPROM_LOCATION, 2);
+    #if defined(ESP32)
+      EEPROM.write(SCROLL_SPEED_EEPROM_LOCATION, 2);
+      EEPROM.commit();
+    #else
+      EEPROM.update(SCROLL_SPEED_EEPROM_LOCATION, 2);
+    #endif
   }
   else if(scrollDelay == SCROLL_DELAY_SLOW)
   {
     scrollDelay = SCROLL_DELAY_FAST;
-    EEPROM.update(SCROLL_SPEED_EEPROM_LOCATION, 3);
+    #if defined(ESP32)
+      EEPROM.write(SCROLL_SPEED_EEPROM_LOCATION, 3);
+      EEPROM.commit();
+    #else
+      EEPROM.update(SCROLL_SPEED_EEPROM_LOCATION, 3);
+    #endif
   }
   lastMenuStateChange = millis();
   showScrollSpeed();
@@ -845,27 +920,52 @@ void changeBlinkRate()
   {
     onTime = defaultOnTime;
     offTime = 1000 - onTime ;
-    EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 1);
+    #if defined(ESP32)
+      EEPROM.write(BLINK_PERIOD_EEPROM_LOCATION, 1);
+      EEPROM.commit();
+    #else
+      EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 1);
+    #endif
   }
   else if(onTime + offTime == 1000)
   {
     offTime = 3000 - onTime ;
-    EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 3);
+    #if defined(ESP32)
+      EEPROM.write(BLINK_PERIOD_EEPROM_LOCATION, 3);
+      EEPROM.commit();
+    #else
+      EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 3);
+    #endif
   }
   else if(onTime + offTime == 3000)
   {
     offTime = 5000 - onTime ;
-    EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 5);
+    #if defined(ESP32)
+      EEPROM.write(BLINK_PERIOD_EEPROM_LOCATION, 5);
+      EEPROM.commit();
+    #else
+      EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 5);
+    #endif
   }
   else if(onTime + offTime == 5000)
   {
     offTime = 10000 - onTime ;
-    EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 10);
+    #if defined(ESP32)
+      EEPROM.write(BLINK_PERIOD_EEPROM_LOCATION, 10);
+      EEPROM.commit();
+    #else
+      EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 10);
+    #endif
   }
   else if(onTime + offTime == 10000)
   {
     onTime = 0;
-    EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 0);
+    #if defined(ESP32)
+      EEPROM.write(BLINK_PERIOD_EEPROM_LOCATION, 0);
+      EEPROM.commit();
+    #else
+      EEPROM.update(BLINK_PERIOD_EEPROM_LOCATION, 0);
+    #endif
   }
   #ifdef DEBUG_FSM
     Serial.print(F("Blink: "));
